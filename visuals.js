@@ -1,9 +1,9 @@
 // ============================================
-// VISUALS MODULE (visuals.js) - FULL PERSISTENT CODE
+// VISUALS MODULE (visuals.js) - FIXED TEXT JITTER
 // ============================================
 
 let foodParticles = [];
-// activeGraphBoids stores: { boid, text, level, opacity, dying, deathTimer, parents: [], localMoodColor }
+// activeGraphBoids stores: { boid, text, level, opacity, dying, deathTimer, parents: [], localMoodColor, mood }
 let activeGraphBoids = []; 
 window.feedingActive = false;
 let eatenFoodCount = 0;
@@ -341,6 +341,55 @@ class Boid {
     }
 }
 
+// --- UPDATED LEGEND LOGIC ---
+window.updateMoodLegend = () => {
+    const legendContainer = document.getElementById('mood-legend');
+    if (!legendContainer) return;
+
+    // Reset logic
+    if (activeGraphBoids.length === 0) {
+        legendContainer.innerHTML = '';
+        return;
+    }
+
+    const counts = {};
+    let totalNodes = 0;
+
+    activeGraphBoids.forEach(b => {
+        if (!b.nodeData || b.nodeData.dying) return;
+        const mood = b.nodeData.mood || "NEUTRAL";
+        counts[mood] = (counts[mood] || 0) + 1;
+        totalNodes++;
+    });
+
+    if (totalNodes === 0) {
+        legendContainer.innerHTML = '';
+        return;
+    }
+
+    // Convert to sorted array
+    const sortedMoods = Object.keys(counts).map(key => {
+        return { mood: key, count: counts[key], pct: (counts[key] / totalNodes) * 100 };
+    }).sort((a, b) => b.pct - a.pct);
+
+    let html = '';
+    sortedMoods.forEach(item => {
+        // Use global palette for legend dot, fallback to white
+        let colorObj = (window.PALETTES && window.PALETTES[item.mood]) ? window.PALETTES[item.mood].pri : {r:255, g:255, b:255};
+        const colorCss = `rgb(${colorObj.r}, ${colorObj.g}, ${colorObj.b})`;
+
+        html += `
+            <div class="legend-item">
+                <span class="legend-text">${item.mood}</span>
+                <span style="color:${colorCss}">${Math.round(item.pct)}%</span>
+                <div class="legend-dot" style="background-color: ${colorCss}; box-shadow: 0 0 6px ${colorCss};"></div>
+            </div>
+        `;
+    });
+
+    legendContainer.innerHTML = html;
+};
+
 // --- UPDATED GRAPH BUILDER: INDIVIDUAL MOODS & TEXT FIX ---
 window.buildKnowledgeGraph = (graphData, boidsArray) => {
     graphModeActive = true;
@@ -369,7 +418,8 @@ window.buildKnowledgeGraph = (graphData, boidsArray) => {
 
     const createNode = (data, level, parents, inheritedMood, index) => {
         const text = typeof data === 'object' ? data.text : data;
-        const mood = typeof data === 'object' ? data.mood : (inheritedMood || "NEUTRAL");
+        // IMPORTANT: Capture specific mood if provided in data, else inherit
+        const mood = typeof data === 'object' && data.mood ? data.mood : (inheritedMood || "NEUTRAL");
         
         const historyText = chatHistory.map(h => h.content).join(" ");
         const sheetText = window.lastRetrievedMemories || "";
@@ -390,21 +440,26 @@ window.buildKnowledgeGraph = (graphData, boidsArray) => {
             opacity: 0,
             dying: false,
             deathTimer: 0,
-            localMoodColor: getMoodColor(mood)
+            localMoodColor: getMoodColor(mood),
+            mood: mood // Store the mood string for the legend
         };
     };
 
     const centerBoid = getBoid();
-    centerBoid.nodeData = createNode(graphData.center, 1, [], graphData.mood || window.currentMood, 0);
+    // Center logic
+    const centerMood = graphData.mood || window.currentMood;
+    centerBoid.nodeData = createNode(graphData.center, 1, [], centerMood, 0);
     activeGraphBoids.push(centerBoid);
 
     if (graphData.branches && Array.isArray(graphData.branches)) {
         graphData.branches.forEach((branch, bIdx) => {
             const boidL2 = getBoid();
             const branchText = branch.label || branch.text;
+            const branchMood = branch.mood || centerMood; // Inherit if missing
+            
             // Space Level 2 branches evenly
             const branchAngleIndex = (bIdx / graphData.branches.length) * Math.PI * 2;
-            boidL2.nodeData = createNode(branchText, 2, [centerBoid], branch.mood || graphData.mood, branchAngleIndex);
+            boidL2.nodeData = createNode(branchText, 2, [centerBoid], branchMood, branchAngleIndex);
             activeGraphBoids.push(boidL2);
 
             if (branch.leaves && Array.isArray(branch.leaves)) {
@@ -414,7 +469,8 @@ window.buildKnowledgeGraph = (graphData, boidsArray) => {
                     const staggerRadius = lIdx % 2 === 0 ? 150 : 220;
                     const leafAngleIndex = (lIdx / branch.leaves.length) * Math.PI * 2 + (bIdx * 0.5);
                     
-                    boidL3.nodeData = createNode(leafData, 3, [boidL2], branch.mood || graphData.mood, leafAngleIndex);
+                    // Leaf data handles its own mood check inside createNode
+                    boidL3.nodeData = createNode(leafData, 3, [boidL2], branchMood, leafAngleIndex);
                     // Temporarily store stagger for the update loop
                     boidL3.nodeData.staggerRadius = staggerRadius; 
                     activeGraphBoids.push(boidL3);
@@ -424,6 +480,9 @@ window.buildKnowledgeGraph = (graphData, boidsArray) => {
     }
 
     digestionGlow = 1.0; 
+    
+    // Trigger legend update now that nodes are created
+    window.updateMoodLegend();
 };
 
 window.triggerGraphDissolve = () => {
@@ -434,6 +493,10 @@ window.triggerGraphDissolve = () => {
         else if(b.nodeData.level === 2) b.nodeData.deathTimer = 40 + Math.random() * 50;
         else b.nodeData.deathTimer = 100 + Math.random() * 40; 
     });
+    
+    // Clear legend when graph dissolves
+    const legendContainer = document.getElementById('mood-legend');
+    if (legendContainer) legendContainer.innerHTML = '';
 };
 
 window.spawnFoodText = (text) => {
@@ -781,7 +844,9 @@ window.initSymbiosisAnimation = function() {
              if (gp.nodeData.level === 2) baseSize = 18;
              if (gp.nodeData.level === 3) baseSize = 12;
              
-             let fontSize = baseSize * gp.scale;
+             // FIXED: Math.floor(fontSize) stops the text from shivering/jittering
+             // when sub-pixel values change slightly due to camera rotation.
+             let fontSize = Math.floor(baseSize * gp.scale);
              if(fontSize < 9) fontSize = 9; 
              
              ctx.font = `bold ${fontSize}px 'Courier New'`;
